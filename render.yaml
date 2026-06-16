@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: flashdash
+    runtime: python
+    buildCommand: ""
+    startCommand: python3 server.py
+    plan: free
+    envVars:
+      - key: TEACHER_PASSWORD
+        generateValue: false
+        value: teacher123
+      - key: UNSPLASH_ACCESS_KEY
+        value: ""
+      - key: PORT
+        value: "10000"
