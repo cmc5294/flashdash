@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flashdash — Spanish Vocabulary</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ENTRY SCREEN -->
+<div id="screen-entry" class="screen active">
+  <div class="entry-card">
+    <h1 class="logo">⚡ Flashdash</h1>
+    <p class="tagline">Spanish → English · Fast · Fun</p>
+    <form id="entry-form">
+      <label>Display Name
+        <input type="text" id="input-name" placeholder="Your name" maxlength="30" required autocomplete="off">
+      </label>
+      <label>Class Code
+        <input type="text" id="input-code" placeholder="e.g. SPAN101" maxlength="20" required autocomplete="off"
+          style="text-transform:uppercase">
+      </label>
+      <button type="submit" class="btn btn-primary btn-large">Play →</button>
+    </form>
+    <button class="btn btn-ghost teacher-link" id="btn-teacher-link">Teacher Login</button>
+    <div id="entry-error" class="error-msg hidden"></div>
+  </div>
+</div>
+
+<!-- GAME SCREEN -->
+<div id="screen-game" class="screen">
+  <!-- HUD -->
+  <div class="hud">
+    <div class="hud-left">
+      <span id="hud-progress">Card 1 / 20</span>
+    </div>
+    <div class="hud-center">
+      <span class="streak-badge" id="hud-streak"></span>
+    </div>
+    <div class="hud-right">
+      <span id="hud-score">0 pts</span>
+    </div>
+  </div>
+
+  <!-- Timer bar -->
+  <div class="timer-bar-wrap">
+    <div class="timer-bar" id="timer-bar"></div>
+  </div>
+
+  <!-- Card flip container -->
+  <div class="card-scene" id="card-scene">
+    <div class="card" id="card">
+      <!-- FRONT -->
+      <div class="card-face card-front">
+        <div class="card-spanish" id="card-spanish">hola</div>
+        <button class="tts-btn" id="btn-tts" title="Hear pronunciation" aria-label="Pronounce word">🔊</button>
+      </div>
+      <!-- BACK -->
+      <div class="card-face card-back">
+        <div class="card-image-wrap">
+          <img id="card-img" src="" alt="" class="card-img">
+          <div class="card-img-placeholder" id="card-img-placeholder">🖼️</div>
+        </div>
+        <div class="card-back-word" id="card-back-word"></div>
+        <div class="card-feedback" id="card-feedback"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Answer choices -->
+  <div class="choices" id="choices" role="group" aria-label="Answer choices"></div>
+
+  <!-- Score pop -->
+  <div class="score-pop" id="score-pop"></div>
+
+  <!-- Next button (shown after reveal) -->
+  <div class="next-wrap hidden" id="next-wrap">
+    <button class="btn btn-primary" id="btn-next">Next Card →</button>
+  </div>
+
+  <!-- Confetti canvas -->
+  <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+</div>
+
+<!-- RESULTS SCREEN -->
+<div id="screen-results" class="screen">
+  <div class="results-card">
+    <h2>Round Complete! 🎉</h2>
+    <div class="results-stats">
+      <div class="stat"><span class="stat-val" id="res-score">0</span><span class="stat-lbl">Score</span></div>
+      <div class="stat"><span class="stat-val" id="res-accuracy">0%</span><span class="stat-lbl">Accuracy</span></div>
+      <div class="stat"><span class="stat-val" id="res-streak">0</span><span class="stat-lbl">Best Streak</span></div>
+    </div>
+    <div class="rank-banner" id="rank-banner"></div>
+    <h3>Leaderboard</h3>
+    <div class="leaderboard" id="leaderboard-table"></div>
+    <button class="btn btn-primary btn-large" id="btn-play-again">Play Again</button>
+  </div>
+</div>
+
+<!-- TEACHER SCREEN -->
+<div id="screen-teacher" class="screen">
+  <div class="teacher-card">
+    <button class="btn btn-ghost back-btn" id="btn-teacher-back">← Back</button>
+    <h2>Teacher Dashboard</h2>
+    <div id="teacher-login-area">
+      <label>Password
+        <input type="password" id="teacher-password" placeholder="Teacher password">
+      </label>
+      <button class="btn btn-primary" id="btn-teacher-login">Login</button>
+      <div id="teacher-auth-error" class="error-msg hidden"></div>
+    </div>
+    <div id="teacher-controls" class="hidden">
+      <section>
+        <h3>Upload Word List (CSV)</h3>
+        <p class="hint">Required columns: <code>spanish</code>, <code>english</code>. Optional: <code>image_url</code></p>
+        <label>Class Code
+          <input type="text" id="teacher-class-code" placeholder="e.g. SPAN101" style="text-transform:uppercase">
+        </label>
+        <label>CSV File
+          <input type="file" id="teacher-csv" accept=".csv,text/csv">
+        </label>
+        <button class="btn btn-primary" id="btn-upload">Upload Deck</button>
+        <div id="upload-result" class="result-msg hidden"></div>
+      </section>
+      <section>
+        <h3>Reset Leaderboard</h3>
+        <label>Class Code
+          <input type="text" id="teacher-reset-code" placeholder="e.g. SPAN101" style="text-transform:uppercase">
+        </label>
+        <button class="btn btn-danger" id="btn-reset">Reset Board</button>
+        <div id="reset-result" class="result-msg hidden"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
