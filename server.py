@@ -263,6 +263,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"url": url})
 
     def api_get_tts(self):
+        import base64
         qs = self.qs()
         text = (qs.get("text", [""])[0]).strip()
         if not text:
@@ -275,7 +276,6 @@ class Handler(BaseHTTPRequestHandler):
             "voice_id": SPEECHIFY_VOICE,
             "audio_format": "mp3",
             "model": "simba-multilingual",
-            "language": "es-MX",
         }).encode()
 
         req = urllib.request.Request(
@@ -284,13 +284,13 @@ class Handler(BaseHTTPRequestHandler):
             headers={
                 "Authorization": f"Bearer {SPEECHIFY_KEY}",
                 "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
             },
             method="POST",
         )
         try:
             with urllib.request.urlopen(req, timeout=8) as r:
-                audio = r.read()
+                data = json.loads(r.read())
+            audio = base64.b64decode(data["audio_data"])
             self.send_response(200)
             self.send_header("Content-Type", "audio/mpeg")
             self.send_header("Content-Length", str(len(audio)))
