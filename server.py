@@ -6,7 +6,6 @@ import io
 import json
 import os
 import sqlite3
-import time
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -71,6 +70,18 @@ def init_db():
                 max_streak  INTEGER NOT NULL,
                 played_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
+            CREATE TABLE IF NOT EXISTS attempts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                score_id    INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                class_code  TEXT NOT NULL,
+                spanish     TEXT NOT NULL,
+                english     TEXT NOT NULL,
+                chosen      TEXT,
+                correct     INTEGER NOT NULL,
+                seconds     REAL NOT NULL,
+                played_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
         """)
 
 
@@ -78,7 +89,7 @@ def init_db():
 # Unsplash helper
 # ---------------------------------------------------------------------------
 
-def fetch_unsplash(term: str):
+def fetch_unsplash(term):
     if not UNSPLASH_KEY:
         return None
     url = (
@@ -101,8 +112,7 @@ def fetch_unsplash(term: str):
 # Multipart parser (minimal — for CSV upload)
 # ---------------------------------------------------------------------------
 
-def parse_multipart(body: bytes, content_type: str):
-    """Return dict of {field_name: value_bytes}."""
+def parse_multipart(body, content_type):
     boundary = None
     for part in content_type.split(";"):
         part = part.strip()
@@ -111,18 +121,15 @@ def parse_multipart(body: bytes, content_type: str):
     if not boundary:
         return {}
     delimiter = ("--" + boundary).encode()
-    end_delimiter = ("--" + boundary + "--").encode()
     fields = {}
     parts = body.split(delimiter)
     for chunk in parts[1:]:
         if chunk.strip() == b"--":
             break
-        # Split header/body on double CRLF
         if b"\r\n\r\n" in chunk:
             header_part, _, value = chunk.partition(b"\r\n\r\n")
         else:
             continue
-        # strip trailing CRLF
         value = value.rstrip(b"\r\n")
         headers = {}
         for line in header_part.split(b"\r\n"):
@@ -148,12 +155,19 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[{self.address_string()}] {fmt % args}")
 
-    # ---- helpers -----------------------------------------------------------
-
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_csv(self, text, filename):
+        body = text.encode("utf-8-sig")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -174,8 +188,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def path_only(self):
         return urllib.parse.urlparse(self.path).path
-
-    # ---- static files ------------------------------------------------------
 
     def serve_static(self, path):
         if path == "/":
@@ -198,13 +210,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path_only()
-
         if p == "/deck":
             self.api_get_deck()
         elif p == "/image":
             self.api_get_image()
         elif p == "/leaderboard":
             self.api_get_leaderboard()
+        elif p == "/teacher/scores":
+            self.api_teacher_scores()
+        elif p == "/teacher/export":
+            self.api_teacher_export()
         else:
             self.serve_static(p)
 
@@ -256,12 +271,88 @@ class Handler(BaseHTTPRequestHandler):
             """, (code,)).fetchall()
         self.send_json({"entries": [dict(r) for r in rows]})
 
+    def api_teacher_scores(self):
+        if not self.teacher_auth():
+            return self.send_json({"error": "Unauthorized"}, 401)
+        qs = self.qs()
+        code = (qs.get("class", [""])[0]).strip().upper()
+        if not code:
+            return self.send_json({"error": "class required"}, 400)
+        with get_db() as db:
+            rounds = db.execute("""
+                SELECT id, name, score, accuracy, max_streak,
+                       datetime(played_at,'unixepoch','localtime') as played_at
+                FROM scores WHERE class_code=? ORDER BY played_at DESC
+            """, (code,)).fetchall()
+            # per-card stats: wrong answer counts per word
+            wrong = db.execute("""
+                SELECT spanish, english, COUNT(*) as wrong_count
+                FROM attempts
+                WHERE class_code=? AND correct=0
+                GROUP BY spanish, english
+                ORDER BY wrong_count DESC
+            """, (code,)).fetchall()
+        self.send_json({
+            "rounds": [dict(r) for r in rounds],
+            "mostMissed": [dict(w) for w in wrong],
+        })
+
+    def api_teacher_export(self):
+        if not self.teacher_auth():
+            return self.send_json({"error": "Unauthorized"}, 401)
+        qs = self.qs()
+        code = (qs.get("class", [""])[0]).strip().upper()
+        export_type = (qs.get("type", ["rounds"])[0])
+        if not code:
+            return self.send_json({"error": "class required"}, 400)
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+
+        if export_type == "attempts":
+            writer.writerow(["Student", "Spanish", "English", "Their Answer", "Correct?", "Seconds", "Played At"])
+            with get_db() as db:
+                rows = db.execute("""
+                    SELECT name, spanish, english, chosen, correct, seconds,
+                           datetime(played_at,'unixepoch','localtime') as played_at
+                    FROM attempts WHERE class_code=?
+                    ORDER BY played_at DESC, name
+                """, (code,)).fetchall()
+            for r in rows:
+                writer.writerow([
+                    r["name"], r["spanish"], r["english"],
+                    r["chosen"] or "(time out)",
+                    "Yes" if r["correct"] else "No",
+                    f"{r['seconds']:.1f}",
+                    r["played_at"],
+                ])
+        else:
+            writer.writerow(["Student", "Score", "Accuracy %", "Best Streak", "Played At"])
+            with get_db() as db:
+                rows = db.execute("""
+                    SELECT name, score, accuracy, max_streak,
+                           datetime(played_at,'unixepoch','localtime') as played_at
+                    FROM scores WHERE class_code=?
+                    ORDER BY played_at DESC
+                """, (code,)).fetchall()
+            for r in rows:
+                writer.writerow([
+                    r["name"], r["score"],
+                    f"{round(r['accuracy']*100)}%",
+                    r["max_streak"], r["played_at"],
+                ])
+
+        filename = f"flashdash_{code}_{export_type}.csv"
+        self.send_csv(buf.getvalue(), filename)
+
     # ---- POST --------------------------------------------------------------
 
     def do_POST(self):
         p = self.path_only()
         if p == "/score":
             self.api_post_score()
+        elif p == "/attempt":
+            self.api_post_attempt()
         elif p == "/deck":
             self.api_post_deck()
         elif p == "/leaderboard/reset":
@@ -282,9 +373,29 @@ class Handler(BaseHTTPRequestHandler):
         if not name or not code or deck_id is None:
             return self.send_json({"error": "Missing fields"}, 400)
         with get_db() as db:
-            db.execute(
+            cur = db.execute(
                 "INSERT INTO scores (name,class_code,deck_id,score,accuracy,max_streak) VALUES (?,?,?,?,?,?)",
                 (name, code, deck_id, score, accuracy, max_streak),
+            )
+            score_id = cur.lastrowid
+        self.send_json({"ok": True, "scoreId": score_id})
+
+    def api_post_attempt(self):
+        body = self.read_json()
+        score_id = body.get("scoreId")
+        name = str(body.get("name", "")).strip()
+        code = str(body.get("classCode", "")).strip().upper()
+        spanish = str(body.get("spanish", "")).strip()
+        english = str(body.get("english", "")).strip()
+        chosen = body.get("chosen")
+        correct = 1 if body.get("correct") else 0
+        seconds = float(body.get("seconds", 0))
+        if not (score_id and name and code and spanish and english):
+            return self.send_json({"error": "Missing fields"}, 400)
+        with get_db() as db:
+            db.execute(
+                "INSERT INTO attempts (score_id,name,class_code,spanish,english,chosen,correct,seconds) VALUES (?,?,?,?,?,?,?,?)",
+                (score_id, name, code, spanish, english, chosen, correct, seconds),
             )
         self.send_json({"ok": True})
 

@@ -378,6 +378,35 @@ input[type="file"] { color: var(--text-dim); font-size: .85rem; padding: .5rem 0
 .result-msg.err { color: var(--red); }
 .hidden { display: none !important; }
 
+/* ===== SCORES TABLE (teacher) ===== */
+.scores-table { display: flex; flex-direction: column; gap: .3rem; margin-top: .4rem; }
+.scores-header {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr 1fr 2fr;
+  gap: .5rem;
+  padding: .4rem .7rem;
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--text-dim);
+}
+.scores-row {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr 1fr 2fr;
+  gap: .5rem;
+  align-items: center;
+  padding: .55rem .7rem;
+  background: var(--surface2);
+  border-radius: 8px;
+  font-size: .85rem;
+}
+/* missed-words table has 3 cols */
+.scores-table:first-of-type .scores-header,
+.scores-table:first-of-type .scores-row {
+  grid-template-columns: 1.5fr 1.5fr 1fr;
+}
+
 /* ===== REDUCED MOTION ===== */
 @media (prefers-reduced-motion: reduce) {
   .card { transition: none; }

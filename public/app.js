@@ -2,7 +2,7 @@
 const CONFIG = {
   roundLength: 20,
   basePoints: 100,
-  speedWindow: 10,        // seconds
+  speedWindow: 10,
   speedBonus: 100,
   multiplierStep: 0.1,
   multiplierCap: 2.0,
@@ -14,6 +14,7 @@ let state = {
   name: '',
   classCode: '',
   deckId: null,
+  scoreId: null,
   words: [],
   queue: [],
   cardIndex: 0,
@@ -26,18 +27,45 @@ let state = {
   timerTimeout: null,
   locked: false,
   teacherPassword: null,
+  imageCache: {},   // english term -> url (prefetched)
 };
+
+// ===== TTS SETUP =====
+let ttsVoice = null;
+
+function loadVoices() {
+  if (!('speechSynthesis' in window)) return;
+  const voices = window.speechSynthesis.getVoices();
+  // Prefer a named Spanish voice; fall back to any es-* voice
+  ttsVoice = voices.find(v => v.lang === 'es-ES' && v.localService) ||
+             voices.find(v => v.lang.startsWith('es') && v.localService) ||
+             voices.find(v => v.lang === 'es-ES') ||
+             voices.find(v => v.lang.startsWith('es')) ||
+             null;
+}
+
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+}
+
+function speak(word) {
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(word);
+  utt.lang = 'es-ES';
+  utt.rate = 0.85;   // slightly slower = clearer
+  if (ttsVoice) utt.voice = ttsVoice;
+  window.speechSynthesis.speak(utt);
+}
 
 // ===== SCREEN HELPERS =====
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
-
-function showError(el, msg) {
-  el.textContent = msg;
-  el.classList.remove('hidden');
-}
+function showError(el, msg) { el.textContent = msg; el.classList.remove('hidden'); }
 function hideError(el) { el.classList.add('hidden'); }
 
 // ===== ENTRY =====
@@ -80,37 +108,47 @@ function startRound() {
   state.maxStreak = 0;
   state.multiplier = 1.0;
   state.correct = 0;
+  state.scoreId = null;
+  state.imageCache = {};
   updateHUD();
   showScreen('screen-game');
+  prefetchImages();
   loadCard();
+}
+
+// Prefetch all images in the background so first card flip is instant
+async function prefetchImages() {
+  for (const word of state.queue) {
+    if (word.image_url) {
+      state.imageCache[word.english] = word.image_url;
+      continue;
+    }
+    try {
+      const r = await fetch(`/image?term=${encodeURIComponent(word.english)}`);
+      const d = await r.json();
+      if (d.url) state.imageCache[word.english] = d.url;
+    } catch {}
+  }
 }
 
 function loadCard() {
   const card = state.queue[state.cardIndex];
   state.locked = false;
 
-  // Reset card to front
   document.getElementById('card').classList.remove('flipped');
-  document.getElementById('card-feedback').textContent = '';
-  document.getElementById('card-feedback').className = 'card-feedback';
-  document.getElementById('card-back-word').textContent = '';
-  document.getElementById('card-img').style.display = 'none';
-  document.getElementById('card-img-placeholder').style.display = 'flex';
   document.getElementById('next-wrap').classList.add('hidden');
-
-  // Set spanish word
-  document.getElementById('card-spanish').textContent = card.spanish;
-
-  // Update HUD progress
   updateHUD();
 
-  // Build choices: 3 distractors + correct
+  document.getElementById('card-spanish').textContent = card.spanish;
+
   const distractors = shuffle(state.words.filter(w => w.english !== card.english)).slice(0, 3);
   const choices = shuffle([card, ...distractors]);
   renderChoices(choices, card);
 
-  // Start timer
   startTimer();
+
+  // Auto-play pronunciation after a short delay so the card feels ready
+  setTimeout(() => speak(card.spanish), 300);
 }
 
 function renderChoices(choices, correct) {
@@ -134,8 +172,7 @@ function startTimer() {
   const bar = document.getElementById('timer-bar');
   bar.style.transition = 'none';
   bar.style.transform = 'scaleX(1)';
-  // Force reflow
-  bar.offsetWidth;
+  bar.offsetWidth; // force reflow
   bar.style.transition = `transform ${CONFIG.speedWindow}s linear`;
   bar.style.transform = 'scaleX(0)';
 
@@ -149,7 +186,6 @@ function stopTimer() {
   clearTimeout(state.timerTimeout);
   const bar = document.getElementById('timer-bar');
   bar.style.transition = 'none';
-  bar.style.transform = bar.style.transform; // freeze
 }
 
 // ===== ANSWER =====
@@ -160,6 +196,7 @@ function handleAnswer(chosen, correct, chosenBtn) {
 
   const elapsed = (performance.now() - state.timerStart) / 1000;
   const isCorrect = chosen === correct;
+  const card = state.queue[state.cardIndex];
 
   // Score
   let points = 0;
@@ -170,13 +207,24 @@ function handleAnswer(chosen, correct, chosenBtn) {
     state.correct++;
     state.streak++;
     if (state.streak > state.maxStreak) state.maxStreak = state.streak;
-    state.multiplier = Math.min(CONFIG.multiplierCap, 1.0 + Math.floor(state.streak) * CONFIG.multiplierStep);
+    state.multiplier = Math.min(CONFIG.multiplierCap, 1.0 + state.streak * CONFIG.multiplierStep);
   } else {
     state.streak = 0;
     state.multiplier = 1.0;
   }
 
   updateHUD();
+
+  // Post attempt (fire-and-forget; we need scoreId which comes back after endRound posts the score,
+  // so we queue attempts and flush them when scoreId is available)
+  state._pendingAttempts = state._pendingAttempts || [];
+  state._pendingAttempts.push({
+    spanish: card.spanish,
+    english: card.english,
+    chosen: chosen,
+    correct: isCorrect,
+    seconds: parseFloat(elapsed.toFixed(2)),
+  });
 
   // Highlight buttons
   document.querySelectorAll('.choice-btn').forEach(btn => {
@@ -185,65 +233,55 @@ function handleAnswer(chosen, correct, chosenBtn) {
     if (btn === chosenBtn && !isCorrect) btn.classList.add('wrong');
   });
 
-  // Show score pop
   if (isCorrect && points > 0) showScorePop(`+${points}`);
-
-  // High-streak confetti
   if (state.streak >= 5 && isCorrect) launchConfetti(8);
   if (state.streak >= 10 && isCorrect) launchConfetti(20);
 
-  // Flip card after short delay
-  setTimeout(() => {
-    const card = state.queue[state.cardIndex];
-    flipCard(card, isCorrect, correct, chosen);
-  }, 350);
+  setTimeout(() => flipCard(card, isCorrect, correct, chosen), 350);
 }
 
 function flipCard(card, isCorrect, correctEnglish, chosen) {
-  // Populate back
-  const wordEl = document.getElementById('card-back-word');
-  const feedEl = document.getElementById('card-feedback');
-  wordEl.textContent = correctEnglish;
-
-  if (isCorrect) {
-    feedEl.textContent = '✓ Correct!';
-    feedEl.className = 'card-feedback feedback-correct';
-  } else {
-    feedEl.textContent = chosen ? `✗ Was: ${correctEnglish}` : `✗ Time up! Was: ${correctEnglish}`;
-    feedEl.className = 'card-feedback feedback-wrong';
-  }
-
-  // Structure the back correctly
   const back = document.querySelector('.card-back');
   back.innerHTML = '';
+
   const imgWrap = document.createElement('div');
   imgWrap.className = 'card-image-wrap';
   const img = document.createElement('img');
-  img.id = 'card-img';
   img.alt = correctEnglish;
   img.className = 'card-img';
   const placeholder = document.createElement('div');
   placeholder.className = 'card-img-placeholder';
-  placeholder.id = 'card-img-placeholder';
   placeholder.textContent = '🖼️';
   imgWrap.appendChild(img);
   imgWrap.appendChild(placeholder);
 
   const right = document.createElement('div');
   right.className = 'card-back-right';
+
+  const wordEl = document.createElement('div');
+  wordEl.className = 'card-back-word';
+  wordEl.textContent = correctEnglish;
+
+  const feedEl = document.createElement('div');
+  feedEl.className = 'card-feedback ' + (isCorrect ? 'feedback-correct' : 'feedback-wrong');
+  feedEl.textContent = isCorrect
+    ? '✓ Correct!'
+    : chosen ? `✗ Was: ${correctEnglish}` : `✗ Time up! Was: ${correctEnglish}`;
+
   right.appendChild(wordEl);
   right.appendChild(feedEl);
-
   back.appendChild(imgWrap);
   back.appendChild(right);
 
-  // Load image
-  loadCardImage(card, img, placeholder);
+  // Use prefetched image (instant) or show placeholder
+  const cachedUrl = state.imageCache[card.english];
+  if (cachedUrl) {
+    img.onload = () => { img.style.display = 'block'; placeholder.style.display = 'none'; };
+    img.src = cachedUrl;
+  }
 
-  // Flip
   document.getElementById('card').classList.add('flipped');
 
-  // Show next button + auto advance
   setTimeout(() => {
     document.getElementById('next-wrap').classList.remove('hidden');
     document.getElementById('btn-next').focus();
@@ -251,22 +289,6 @@ function flipCard(card, isCorrect, correctEnglish, chosen) {
 
   const advanceTimer = setTimeout(advance, CONFIG.autoAdvanceMs);
   document.getElementById('btn-next').onclick = () => { clearTimeout(advanceTimer); advance(); };
-}
-
-async function loadCardImage(card, imgEl, placeholder) {
-  let url = card.image_url || null;
-  if (!url) {
-    try {
-      const r = await fetch(`/image?term=${encodeURIComponent(card.english)}`);
-      const d = await r.json();
-      url = d.url || null;
-    } catch { url = null; }
-  }
-  if (url) {
-    imgEl.onload = () => { imgEl.style.display = 'block'; placeholder.style.display = 'none'; };
-    imgEl.onerror = () => {};
-    imgEl.src = url;
-  }
 }
 
 function advance() {
@@ -305,28 +327,10 @@ function showScorePop(text) {
   el.classList.add('show');
 }
 
-// ===== TTS =====
+// ===== TTS BUTTON =====
 document.getElementById('btn-tts').addEventListener('click', () => {
-  const word = document.getElementById('card-spanish').textContent;
-  speak(word);
+  speak(document.getElementById('card-spanish').textContent);
 });
-
-function speak(word) {
-  if (!('speechSynthesis' in window)) return;
-  window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(word);
-  utt.lang = 'es-ES';
-  const voices = window.speechSynthesis.getVoices();
-  const spanish = voices.find(v => v.lang.startsWith('es'));
-  if (spanish) utt.voice = spanish;
-  window.speechSynthesis.speak(utt);
-}
-
-// Load voices early
-if ('speechSynthesis' in window) {
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
-}
 
 // ===== KEYBOARD =====
 document.addEventListener('keydown', e => {
@@ -338,18 +342,16 @@ document.addEventListener('keydown', e => {
     return;
   }
   const map = { '1': 0, '2': 1, '3': 2, '4': 3 };
-  if (e.key in map) {
-    const btns = document.querySelectorAll('.choice-btn');
-    btns[map[e.key]]?.click();
-  }
+  if (e.key in map) document.querySelectorAll('.choice-btn')[map[e.key]]?.click();
 });
 
 // ===== END ROUND =====
 async function endRound() {
   const accuracy = state.queue.length > 0 ? state.correct / state.queue.length : 0;
-  // Post score
+
+  // Post round score first (to get scoreId)
   try {
-    await fetch('/score', {
+    const res = await fetch('/score', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -361,14 +363,31 @@ async function endRound() {
         maxStreak: state.maxStreak,
       }),
     });
+    const d = await res.json();
+    state.scoreId = d.scoreId;
   } catch {}
 
-  // Show results screen
+  // Flush per-card attempts now that we have scoreId
+  if (state.scoreId && state._pendingAttempts?.length) {
+    for (const attempt of state._pendingAttempts) {
+      fetch('/attempt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scoreId: state.scoreId,
+          name: state.name,
+          classCode: state.classCode,
+          ...attempt,
+        }),
+      }).catch(() => {});
+    }
+    state._pendingAttempts = [];
+  }
+
   document.getElementById('res-score').textContent = state.score.toLocaleString();
   document.getElementById('res-accuracy').textContent = `${Math.round(accuracy * 100)}%`;
   document.getElementById('res-streak').textContent = state.maxStreak;
 
-  // Load leaderboard
   try {
     const res = await fetch(`/leaderboard?class=${encodeURIComponent(state.classCode)}`);
     const data = await res.json();
@@ -391,17 +410,15 @@ function renderLeaderboard(entries, myName, myScore) {
 
   const show = entries.slice(0, 20);
   const needPin = myIndex >= 20;
-  const pinEntry = needPin ? entries[myIndex] : null;
 
-  show.forEach((entry, i) => {
-    tableEl.appendChild(makeRow(i + 1, entry, entry.name === myName));
-  });
-  if (pinEntry) {
+  show.forEach((entry, i) => tableEl.appendChild(makeRow(i + 1, entry, entry.name === myName)));
+
+  if (needPin) {
     const sep = document.createElement('div');
     sep.style.cssText = 'text-align:center;color:var(--text-dim);font-size:.8rem;padding:.4rem';
     sep.textContent = '···';
     tableEl.appendChild(sep);
-    tableEl.appendChild(makeRow(myIndex + 1, pinEntry, true));
+    tableEl.appendChild(makeRow(myIndex + 1, entries[myIndex], true));
   }
 }
 
@@ -426,29 +443,20 @@ function launchConfetti(count) {
   const ctx = canvas.getContext('2d');
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
-
   const pieces = Array.from({ length: count }, () => ({
-    x: Math.random() * canvas.width,
-    y: -20,
-    vx: (Math.random() - .5) * 6,
-    vy: Math.random() * 4 + 3,
+    x: Math.random() * canvas.width, y: -20,
+    vx: (Math.random() - .5) * 6, vy: Math.random() * 4 + 3,
     color: ['#f5a623','#e94560','#2ecc71','#3498db','#9b59b6','#fff'][Math.floor(Math.random() * 6)],
-    size: Math.random() * 8 + 5,
-    angle: Math.random() * Math.PI * 2,
-    spin: (Math.random() - .5) * .3,
-    life: 1,
+    size: Math.random() * 8 + 5, angle: Math.random() * Math.PI * 2,
+    spin: (Math.random() - .5) * .3, life: 1,
   }));
-
   let raf;
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     let alive = false;
     pieces.forEach(p => {
-      p.x += p.vx;
-      p.y += p.vy;
-      p.vy += .15;
-      p.angle += p.spin;
-      p.life -= .012;
+      p.x += p.vx; p.y += p.vy; p.vy += .15;
+      p.angle += p.spin; p.life -= .012;
       if (p.life > 0 && p.y < canvas.height + 20) {
         alive = true;
         ctx.save();
@@ -498,14 +506,11 @@ document.getElementById('btn-upload').addEventListener('click', async () => {
   const fileInput = document.getElementById('teacher-csv');
   const resultEl = document.getElementById('upload-result');
   resultEl.className = 'result-msg hidden';
-
   if (!code) { resultEl.textContent = 'Enter a class code.'; resultEl.className = 'result-msg err'; return; }
   if (!fileInput.files[0]) { resultEl.textContent = 'Select a CSV file.'; resultEl.className = 'result-msg err'; return; }
-
   const form = new FormData();
   form.append('classCode', code);
   form.append('csv', fileInput.files[0]);
-
   try {
     const res = await fetch('/deck', {
       method: 'POST',
@@ -532,7 +537,6 @@ document.getElementById('btn-reset').addEventListener('click', async () => {
   resultEl.className = 'result-msg hidden';
   if (!code) { resultEl.textContent = 'Enter a class code.'; resultEl.className = 'result-msg err'; return; }
   if (!confirm(`Reset leaderboard for ${code}? This cannot be undone.`)) return;
-
   try {
     const res = await fetch('/leaderboard/reset', {
       method: 'POST',
@@ -542,6 +546,106 @@ document.getElementById('btn-reset').addEventListener('click', async () => {
     const d = await res.json();
     resultEl.textContent = d.ok ? `✓ Leaderboard for ${code} cleared.` : d.error;
     resultEl.className = `result-msg ${d.ok ? 'ok' : 'err'}`;
+  } catch {
+    resultEl.textContent = 'Connection error.';
+    resultEl.className = 'result-msg err';
+  }
+});
+
+// ===== TEACHER SCORES VIEW =====
+document.getElementById('btn-view-scores').addEventListener('click', async () => {
+  const code = document.getElementById('teacher-scores-code').value.trim().toUpperCase();
+  const resultEl = document.getElementById('scores-result');
+  const panelEl = document.getElementById('scores-panel');
+  resultEl.className = 'result-msg hidden';
+  panelEl.innerHTML = '';
+  if (!code) { resultEl.textContent = 'Enter a class code.'; resultEl.className = 'result-msg err'; return; }
+
+  try {
+    const res = await fetch(`/teacher/scores?class=${encodeURIComponent(code)}`, {
+      headers: { 'x-teacher-password': state.teacherPassword },
+    });
+    const d = await res.json();
+    if (d.error) { resultEl.textContent = d.error; resultEl.className = 'result-msg err'; return; }
+
+    // Summary table
+    if (!d.rounds.length) {
+      panelEl.innerHTML = '<p style="color:var(--text-dim)">No rounds played yet for this class.</p>';
+      return;
+    }
+
+    // Most missed words
+    if (d.mostMissed.length) {
+      const h = document.createElement('h4');
+      h.textContent = '⚠️ Most Missed Words';
+      h.style.marginBottom = '.5rem';
+      panelEl.appendChild(h);
+      const missedTable = document.createElement('div');
+      missedTable.className = 'scores-table';
+      missedTable.innerHTML = `<div class="scores-header"><span>Spanish</span><span>English</span><span>Times Missed</span></div>`;
+      d.mostMissed.slice(0, 10).forEach(w => {
+        const row = document.createElement('div');
+        row.className = 'scores-row';
+        row.innerHTML = `<span>${escHtml(w.spanish)}</span><span>${escHtml(w.english)}</span><span style="color:var(--red);font-weight:700">${w.wrong_count}</span>`;
+        missedTable.appendChild(row);
+      });
+      panelEl.appendChild(missedTable);
+    }
+
+    const h2 = document.createElement('h4');
+    h2.textContent = '📋 All Rounds';
+    h2.style.margin = '1rem 0 .5rem';
+    panelEl.appendChild(h2);
+
+    const roundTable = document.createElement('div');
+    roundTable.className = 'scores-table';
+    roundTable.innerHTML = `<div class="scores-header"><span>Student</span><span>Score</span><span>Accuracy</span><span>Streak</span><span>Played</span></div>`;
+    d.rounds.forEach(r => {
+      const row = document.createElement('div');
+      row.className = 'scores-row';
+      row.innerHTML = `
+        <span>${escHtml(r.name)}</span>
+        <span style="color:var(--gold);font-weight:700">${r.score.toLocaleString()}</span>
+        <span>${Math.round(r.accuracy * 100)}%</span>
+        <span>${r.max_streak}</span>
+        <span style="font-size:.78rem;color:var(--text-dim)">${r.played_at}</span>
+      `;
+      roundTable.appendChild(row);
+    });
+    panelEl.appendChild(roundTable);
+
+    // Download buttons
+    const dlWrap = document.createElement('div');
+    dlWrap.style.cssText = 'display:flex;gap:.75rem;margin-top:1rem;flex-wrap:wrap';
+    dlWrap.innerHTML = `
+      <a class="btn btn-primary" href="/teacher/export?class=${encodeURIComponent(code)}&type=rounds" download
+         style="text-decoration:none;font-size:.85rem;padding:.55rem 1rem"
+         onclick="this.setAttribute('href', this.href)"
+         id="dl-rounds">⬇ Download Rounds CSV</a>
+      <a class="btn btn-primary" href="/teacher/export?class=${encodeURIComponent(code)}&type=attempts" download
+         style="text-decoration:none;background:var(--accent2);font-size:.85rem;padding:.55rem 1rem"
+         id="dl-attempts">⬇ Download Per-Card CSV</a>
+    `;
+    panelEl.appendChild(dlWrap);
+
+    // Inject auth header into download links via fetch+blob
+    dlWrap.querySelectorAll('a[download]').forEach(link => {
+      link.addEventListener('click', async e => {
+        e.preventDefault();
+        const href = link.getAttribute('href');
+        try {
+          const r = await fetch(href, { headers: { 'x-teacher-password': state.teacherPassword } });
+          const blob = await r.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = link.getAttribute('download') || 'export.csv';
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch { alert('Download failed.'); }
+      });
+    });
+
   } catch {
     resultEl.textContent = 'Connection error.';
     resultEl.className = 'result-msg err';
@@ -558,5 +662,5 @@ function shuffle(arr) {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
