@@ -2,12 +2,12 @@ services:
   - type: web
     name: flashdash
     runtime: python
-    buildCommand: ""
+    pythonVersion: "3.11"
+    buildCommand: "echo 'No build step needed'"
     startCommand: python3 server.py
     plan: free
     envVars:
       - key: TEACHER_PASSWORD
-        generateValue: false
         value: teacher123
       - key: UNSPLASH_ACCESS_KEY
         value: ""
