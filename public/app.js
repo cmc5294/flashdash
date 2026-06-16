@@ -31,12 +31,13 @@ let state = {
 };
 
 // ===== TTS SETUP =====
+// audioCache avoids re-fetching the same word twice in a round
+const audioCache = {};
 let ttsVoice = null;
 
 function loadVoices() {
   if (!('speechSynthesis' in window)) return;
   const voices = window.speechSynthesis.getVoices();
-  // Prefer a named Spanish voice; fall back to any es-* voice
   ttsVoice = voices.find(v => v.lang === 'es-ES' && v.localService) ||
              voices.find(v => v.lang.startsWith('es') && v.localService) ||
              voices.find(v => v.lang === 'es-ES') ||
@@ -50,14 +51,45 @@ if ('speechSynthesis' in window) {
   loadVoices();
 }
 
-function speak(word) {
+function speakFallback(word) {
   if (!('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
   const utt = new SpeechSynthesisUtterance(word);
   utt.lang = 'es-ES';
-  utt.rate = 0.85;   // slightly slower = clearer
+  utt.rate = 0.85;
   if (ttsVoice) utt.voice = ttsVoice;
   window.speechSynthesis.speak(utt);
+}
+
+async function speak(word) {
+  // Try Speechify proxy first; fall back to browser TTS
+  if (audioCache[word]) {
+    playAudioBlob(audioCache[word]);
+    return;
+  }
+  try {
+    const res = await fetch(`/tts?text=${encodeURIComponent(word)}`);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      if (d.error === 'no_key') {
+        // Server has no Speechify key — use browser TTS silently
+        speakFallback(word);
+      }
+      return;
+    }
+    const blob = await res.blob();
+    audioCache[word] = blob;
+    playAudioBlob(blob);
+  } catch {
+    speakFallback(word);
+  }
+}
+
+function playAudioBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.onended = () => URL.revokeObjectURL(url);
+  audio.play().catch(() => {});
 }
 
 // ===== SCREEN HELPERS =====
