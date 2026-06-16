@@ -11,9 +11,5 @@ services:
         value: teacher123
       - key: UNSPLASH_ACCESS_KEY
         value: ""
-      - key: SPEECHIFY_API_KEY
-        value: ""
-      - key: SPEECHIFY_VOICE_ID
-        value: "george"
       - key: PORT
         value: "10000"

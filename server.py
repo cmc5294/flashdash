@@ -14,8 +14,6 @@ from pathlib import Path
 PORT = int(os.environ.get("PORT", 3000))
 TEACHER_PASSWORD = os.environ.get("TEACHER_PASSWORD", "teacher123")
 UNSPLASH_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "")
-SPEECHIFY_KEY = os.environ.get("SPEECHIFY_API_KEY", "")
-SPEECHIFY_VOICE = os.environ.get("SPEECHIFY_VOICE_ID", "george")  # override in env if desired
 DB_PATH = Path(__file__).parent / "flashdash.db"
 PUBLIC = Path(__file__).parent / "public"
 
@@ -216,8 +214,6 @@ class Handler(BaseHTTPRequestHandler):
             self.api_get_deck()
         elif p == "/image":
             self.api_get_image()
-        elif p == "/tts":
-            self.api_get_tts()
         elif p == "/leaderboard":
             self.api_get_leaderboard()
         elif p == "/teacher/scores":
@@ -261,49 +257,6 @@ class Handler(BaseHTTPRequestHandler):
             with get_db() as db:
                 db.execute("INSERT OR REPLACE INTO image_cache (term, url) VALUES (?,?)", (term, url))
         self.send_json({"url": url})
-
-    def api_get_tts(self):
-        import base64
-        qs = self.qs()
-        text = (qs.get("text", [""])[0]).strip()
-        if not text:
-            return self.send_json({"error": "text required"}, 400)
-        if not SPEECHIFY_KEY:
-            return self.send_json({"error": "no_key"}, 503)
-
-        payload = json.dumps({
-            "input": text,
-            "voice_id": SPEECHIFY_VOICE,
-            "audio_format": "mp3",
-            "model": "simba-multilingual",
-        }).encode()
-
-        req = urllib.request.Request(
-            "https://api.speechify.ai/v1/audio/speech",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {SPEECHIFY_KEY}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=8) as r:
-                data = json.loads(r.read())
-            audio = base64.b64decode(data["audio_data"])
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/mpeg")
-            self.send_header("Content-Length", str(len(audio)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(audio)
-        except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")
-            print(f"[Speechify] HTTP {e.code}: {body}")
-            self.send_json({"error": f"Speechify error {e.code}"}, 502)
-        except Exception as e:
-            print(f"[Speechify] {e}")
-            self.send_json({"error": "TTS unavailable"}, 502)
 
     def api_get_leaderboard(self):
         qs = self.qs()
